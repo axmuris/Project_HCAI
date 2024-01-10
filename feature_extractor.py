@@ -1,14 +1,14 @@
 import os
-import configparser
 
 import SimpleITK as sitk
 
-import radiomics
 from radiomics import featureextractor
 
 import numpy as np
 
 import re
+
+import pandas as pd
 
 from matplotlib import pyplot as plt
 
@@ -45,6 +45,7 @@ def feature_extractor (image, mask, extractor, patient, frame, mask_type):
             continue
 
         featureValue = featureVector[featureName]
+        featureValue = float(featureValue)  # Fix for 0-dimensional ndarrays
 
         feature_type_string, name = re.fullmatch(r"original_(.*)_(.*)", featureName).groups()
         feature = Feature(name, feature_types_names.inverse[feature_type_string], mask_type, frame, featureValue)
@@ -64,11 +65,15 @@ def feature_extractor_folder (folder_path):
         patient.nb = int(case[-3:])
         #Extract value from cfg
         
-        valid, frameED, frameES, patient.group, patient.height, patient.nb_frame, patient.weight = extract_data_from_file(os.path.join(folder_path, case,'Info.cfg'))
+        valid, frameED, frameES, group, height, nb_frame, weight = extract_data_from_file(os.path.join(folder_path, case,'Info.cfg'))
         if not valid:
                 print(f"Skipping {case}")
                 continue
-        patient.ED_ES_Duration=np.abs(frameED-frameES)
+        
+        height_feature = Feature("height", feature_types_names[FeatureTypes.GENERAL], None, None, height)
+        weight_feature = Feature("weight", feature_types_names[FeatureTypes.GENERAL], None, None, weight)
+        ed_es_feature = Feature("ED_ES_duration", feature_types_names[FeatureTypes.GENERAL], None, None, np.abs(frameED-frameES))
+        patient.features += [height_feature, weight_feature, ed_es_feature]
         
         # Add leading 0 if necessary
         frames = {
@@ -113,6 +118,26 @@ def feature_extractor_folder (folder_path):
     return patients
 
 
+def feature_extractor_folder_to_csv(folder_path, target_path):
+    patients = feature_extractor_folder(folder_path)
+    features_table = np.zeros((len(patients[0].features), len(patients)))
+    feature_names = []
+    for i, patient in enumerate(patients):
+        for j, feature in enumerate(patient.features):
+            features_table[j][i] = feature.value
+
+            if i == 0:
+                if feature.frame is None:
+                    feature_name = feature.name
+                else:
+                    frame = "ED" if feature.frame == Frame.ED else "ES"
+                    part = "RV" if feature.part == MaskValues.RV else ("LV" if feature.part == MaskValues.LV else "MYO")
+                    feature_name = "_".join([feature.name,frame,part])
+                feature_names.append(feature_name)
+    df = pd.DataFrame(data=features_table, index=feature_names, columns=list(range(1,len(patients)+1)))
+    df.to_csv(target_path, sep=";")
+
+
 if __name__ == "__main__":
-    folder_path = "/media/jonathan.bouyer/Transcend/5ETI/Projet/Resources/training"
-    feature_extractor_folder(folder_path)
+    folder_path = "/media/jonathan.bouyer/Transcend/5ETI/Projet/Resources/temp"
+    feature_extractor_folder_to_csv(folder_path, "./features.csv")
