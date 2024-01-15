@@ -1,8 +1,11 @@
 from enum import Enum
+import numpy as np
+
+import pandas as pd
 
 from sklearn.model_selection import cross_val_score, LeaveOneOut
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.svm import LinearSVC
 
 """
@@ -12,34 +15,61 @@ import torch.nn.init as init
 from torch.data import Dataset
 """
 
+from feature_extractor import feature_extractor_folder
 from data import FeatureTypes, Frame, MaskValues
 
 
 
-def preprocess_data(patient_list, *, kept_types=[], kept_part, kept_frame, kept_number, thr):
+def extract_feature_by_name(features_csv_path, feature_names, gt_csv_path):
+    features_df = pd.read_csv(features_csv_path, header=0, index_col=0, sep=";")
+
+    svm_entries = []
+    for column_name in features_df:
+        features = []
+        for feature_name in feature_names:
+            features.append(features_df.loc[feature_name][column_name])
+        svm_entries.append(features)
+
+    gt_df = pd.read_csv(gt_csv_path, index_col=0, sep=";")
+    svm_data = [(svm_entries[i], gt_df.iloc[i][0]) for i in range(len(svm_entries))]
+
+    return svm_data
+
+
+
+def preprocess_data(patient_list, *, kept_types=[], kept_parts=[MaskValues.LV, MaskValues.RV, MaskValues.MYO],
+                    kept_frames=[Frame.ED, Frame.ES], kept_number=None, thr=0):
     """
     patient_list : list of PatientFeatures object whose features must be extracted to be fed to the SVM
     kept_types : list of FeatureTypes listing which type of features are kept
-    kept_number : list of number of features kept in each of the listed types
+    kept_parts: list of MaskValues kept for the SVM
+    kept_frames: list of Frame kept for the SVM
+    kept_number : max number of features kept
+    thr: threshold of importance of the features
     """
-    assert len(kept_types) == len(kept_number), "The list of kept types must be of same length as the list of number of features kept in each of these types"
 
+    keep_all_types = kept_types == []
     features = []
     for patient in patient_list:
-        for i, feature_type in enumerate(kept_types):
-            features.append(patient.features[feature_type])
+        nb = 0
+        for feature in patient.features:
+            valid_type = feature.type in kept_types or keep_all_types
+            valid_part = feature.part in kept_parts
+            valid_frame = feature.frame in kept_frames
+            valid_importance = feature.importance >= thr
+            if valid_type and valid_part and valid_frame and valid_importance:
+                features.append(feature.value)
+                nb += 1
+                if kept_number is not None and nb > kept_number:
+                    break
+    return features
 
 
 
-def svm():
-    X = [
-        [1, 0],
-        [2, 1],
-        [-1, 0],
-        [0, 2],
-        [0,-2]
-    ]
-    Y = [-1, -1, 1, 1, -1]
+def svm(X, Y):
+    le = LabelEncoder()
+    le.fit(Y)
+    Y = le.transform(Y)
 
     penalty = 'l1'
     SVM = LinearSVC(penalty=penalty, loss='squared_hinge', dual=False)
@@ -49,7 +79,7 @@ def svm():
 
     loo = LeaveOneOut()
     scores = cross_val_score(pipeline, X, Y, cv=loo)
-    print(scores)
+    print('Accuracy: %.3f (%.3f)' % (np.mean(scores), np.std(scores)))
 
 
 """
@@ -171,5 +201,25 @@ def mlp():
             optimizer.step()
 """
 
+def main():
+    folder_path = "/media/jonathan.bouyer/Transcend/5ETI/Projet/Resources/temp"
+    patients_list = feature_extractor_folder(folder_path)
+    features = preprocess_data(patients_list, kept_types=[FeatureTypes.SHAPE])
+    print(features)
+
+
 if __name__ == "__main__":
-    svm()
+    features = extract_feature_by_name("./data/features_training.csv",
+                                  ["VoxelVolume_ED_MYO", "SurfaceVolumeRatio_ES_LV", "LeastAxisLength_ES_LV",
+                                   "Maximum2DDiameterColumn_ED_LV","Maximum2DDiameterRow_ED_LV","Maximum2DDiameterSlice_ED_LV",
+                                   "Maximum3DDiameter_ES_RV", "Maximum3DDiameter_ES_MYO", "SurfaceArea_ED_RV", "height"],
+                                   "./data/groups.csv")
+    X = [x for x, _ in features]
+    Y = [y for _, y in features]
+
+    svm(X, Y)
+    #print(extract_feature_by_name("./data/features_training.csv",
+    #                              ["VoxelVolume_ED_MYO", "SurfaceVolumeRatio_ES_LV", "LeastAxisLength_ES_LV",
+    #                               "Maximum2DDiameterColumn_ED_LV","Maximum2DDiameterRow_ED_LV","Maximum2DDiameterSlice_ED_LV",
+    #                               "Maximum3DDiameter_ES_RV", "Maximum3DDiameter_ES_MYO", "SurfaceArea_ED_RV", "height"],
+    #                               "./data/groups.csv"))
