@@ -1,6 +1,4 @@
-from enum import Enum
 import numpy as np
-import os
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -31,6 +29,7 @@ class MLPClassifier(nn.Module):
             nn.BatchNorm1d(32),
             nn.LeakyReLU()
         )
+        self.dropout = nn.Dropout(0.2)
 
         nb_hidden_layers = 4
 
@@ -43,6 +42,7 @@ class MLPClassifier(nn.Module):
         self.output_layer = nn.Linear(32, output_size)
 
     def forward(self, x):
+        x = self.dropout(x)
         x = self.layers(x.to(torch.float32))
         x += (0.1**0.5)*torch.randn(x.shape)
         output = self.output_layer(x)
@@ -92,8 +92,8 @@ def main():
     training_data = CustomFeaturesDataset("./data/features_training.csv", "./data/groups_training.csv")
     test_data = CustomFeaturesDataset("./data/features_testing.csv", "./data/groups_testing.csv")
 
-    train_dataloader = DataLoader(training_data, batch_size=4, shuffle=True)
-    test_dataloader = DataLoader(test_data, batch_size=4, shuffle=True)
+    train_dataloader = DataLoader(training_data, batch_size=20, shuffle=True)
+    test_dataloader = DataLoader(test_data, batch_size=20, shuffle=True)
 
     if torch.cuda.is_available():
         print('use cuda')
@@ -106,13 +106,6 @@ def main():
     init_params(net)
     net = net.to(device)
 
-    dlossesTR    = {}
-    dlossesTRAll = {}
-    dlossesTE    = {}
-    didxEpoch    = {}
-    dbestAcc     = {}
-    dnbParam     = {}
-
     lr0 = 5e-4
 
     test_name = net.name + '_lr0_' + "{:.1e}".format(lr0)
@@ -122,6 +115,9 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     nb_epoch = 400
+    epoch_patience = 40
+    epoch_stability = 0
+    early_stop_thr = 1e-3
 
     lossesTR    = []
     lossesTRAll = []
@@ -134,24 +130,18 @@ def main():
 
     for epoch in range(nb_epoch):
         # potentially decrease lr 
-        # scheduler.step()
         print(epoch, "/", nb_epoch)
         lr *= 0.97
         optimizer.lr = lr
+        losses = []
 
         print(lr)
 
         # Train : 1 epoch <-> loop once one the entire training dataset
         start = time.time()
         # Train : 1 epoch <-> loop once one the entire training dataset
-        for batch_idx, (inputs, targets) in enumerate(train_dataloader):
-            if batch_idx ==0:
-                continue
-            #if cuda_available:
-            #    inputs, targets = inputs.cuda(), targets.cuda()
-            # transfer to GPU if avalaible
+        for inputs, targets in train_dataloader:
             inputs, targets = inputs.to(device), targets.to(device)
-
             
             # clear gradient    
             optimizer.zero_grad()
@@ -171,7 +161,7 @@ def main():
             # one update of the parameter update
             optimizer.step()
 
-                    # store loss of the current iterate
+            # store loss of the current iterate
             losses.append(loss.data.item())
             lossesTRAll.append(loss.data.item())
 
@@ -182,13 +172,13 @@ def main():
         print('Epoch : %d Train Loss : %.3f         time: %.3f' % (epoch, np.mean(losses),end-start))
         
         # Evaluate the current network on the validation dataset
-        net.eval()
+        net.train()
         total = 0
         correct = 0
         losses = []
         start = time.time()
 
-        for batch_idx, (inputs, targets) in enumerate(test_dataloader):
+        for inputs, targets in test_dataloader:
             # transfer to GPU if avalaible
             inputs, targets = inputs.to(device), targets.to(device)
 
@@ -200,38 +190,30 @@ def main():
             correct += predicted.eq(targets.data).cpu().sum()
         end = time.time()
         lossesTE.append(np.mean(losses))
+        if len(lossesTE) > 1 and np.abs(lossesTE[-1] - lossesTE[-2]) < early_stop_thr:
+            epoch_stability += 1
+            if epoch_stability >= epoch_patience:
+                print("EARLY STOPPING")
+                break
 
-        bestAcc = max(bestAcc,100.*correct/total)
+        bestAcc = max(bestAcc,100.*correct.item()/total)
         print('Epoch : %d Test Loss  : %.3f        Test Acc %.3f       time: %.3f' % (epoch, np.mean(losses),100.*correct/total,end-start))
         print('--------------------------------------------------------------')
-        net.train()        
+        net.train()
 
-    # to store losses for all epochs / iterations
-    lossesTR
-    dlossesTR[test_name]    = lossesTR
-    dlossesTRAll[test_name] = lossesTRAll
-    dlossesTE[test_name]    = lossesTE
-    didxEpoch[test_name]    = idxEpoch
-    dbestAcc[test_name]     = bestAcc
-    dnbParam[test_name]     = count_parameters(net)
+    print ('----------------------------------------------------------------------------')
+    print ('----------------------------------------------------------------------------')
+    print ('----------------------------------------------------------------------------')
+    print ('best accuracy      : '+str(bestAcc))
+    print ('best loss on train : '+str(np.min(lossesTR)) + ' idx '+str(np.argmin(lossesTR)))
+    print ('best loss on test  : '+str(np.min(lossesTE)) + ' idx '+str(np.argmin(lossesTE)))
+    print ('n param            : '+str(count_parameters(net)))
 
-    for n in [ 'mlp_lr0_5.0e-04' ]: # ajouter dans cette liste le nom des reseaux que vous tester 
-        if n in dlossesTR:
-            print ('----------------------------------------------------------------------------')
-            print ('----------------------------------------------------------------------------')
-            print ('----------------------------------------------------------------------------')
-            print (n)
-            print ('best accuracy      : '+str(dbestAcc[n].item()))
-            print ('best loss on train : '+str(np.min(dlossesTR[n])) + ' idx '+str(np.argmin(dlossesTR[n])))
-            print ('best loss on test  : '+str(np.min(dlossesTE[n])) + ' idx '+str(np.argmin(dlossesTE[n])))
-            print ('n param            : '+str(dnbParam[n]))
+    # evenly sampled time at 200ms intervals
+    t = np.arange(0, len(lossesTRAll))
 
-            # evenly sampled time at 200ms intervals
-            t = np.arange(0, len(dlossesTRAll[n]))
-
-            plt.plot(t, dlossesTRAll[n], 'b', didxEpoch[n][1:], dlossesTR[n], 'ro', didxEpoch[n][1:], dlossesTE[n], 'gs')
-            plt.title(n)
-            plt.show()
+    plt.plot(t, lossesTRAll, 'b', idxEpoch[1:], lossesTR, 'ro', idxEpoch[1:], lossesTE, 'gs')
+    plt.show()
 
 if __name__ == "__main__":
     main()
