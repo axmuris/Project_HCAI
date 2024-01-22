@@ -3,13 +3,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import time
 import random
+from sklearn.metrics import classification_report, confusion_matrix
 
 import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 
 
 classes = ["NOR", "MINF", "DCM", "HCM", "RV"]
@@ -50,19 +51,87 @@ class MLPClassifier(nn.Module):
         x = x.to(torch.float32)
         x = nn.functional.normalize(x)
 
-        if self.training:
-            x = self.dropout(x)
+        #if self.training:
+        #    x = self.dropout(x)
 
         x = self.input_layer(x)
         x = self.batch_norm(x)
         x = self.leaky_relu(x)
+        if self.training:
+            x += (0.05**0.5)*torch.randn(x.shape)
 
-        for _ in range(self.nb_hidden_layers):
+        for _ in range(self.nb_hidden_layers - 1):
             x = self.linear(x)
             x = self.batch_norm(x)
             if self.training:
-                x += (0.1**0.5)*torch.randn(x.shape)
+                x += (0.05**0.5)*torch.randn(x.shape)
             x = self.leaky_relu(x)
+
+        output = self.output_layer(x)
+        output = self.softmax(output)
+
+        return output
+    
+class MLPClassifier2(nn.Module):
+    def __init__(self, input_size, output_size):
+        super().__init__()
+
+        self.name = "mlp"
+
+
+        self.layers = nn.Sequential(
+            nn.Linear(input_size, 32),
+            nn.BatchNorm1d(32),
+            nn.LeakyReLU()
+        )
+        
+        self.nb_hidden_layers = 4
+
+        for i in range(self.nb_hidden_layers - 1):  # Adding 3 more hidden layers
+            self.layers.add_module('hidden_linear', nn.Linear(32, 32))
+            self.layers.add_module('hidden_batchnorm', nn.BatchNorm1d(32))
+            self.layers.add_module('hidden_leakyrelu', nn.LeakyReLU())
+            
+        self.softmax = nn.Softmax()
+        self.output_layer = nn.Linear(32, output_size)
+
+    def forward(self, x):
+        x = x.to(torch.float32)
+        x = nn.functional.normalize(x)
+        x = self.layers(x)
+
+        output = self.output_layer(x)
+        output = self.softmax(output)
+
+        return output
+    
+class MLPClassifier2(nn.Module):
+    def __init__(self, input_size, output_size):
+        super().__init__()
+
+        self.name = "mlp"
+
+
+        self.layers = nn.Sequential(
+            nn.Linear(input_size, 32),
+            nn.BatchNorm1d(32),
+            nn.LeakyReLU()
+        )
+        
+        self.nb_hidden_layers = 4
+
+        for i in range(self.nb_hidden_layers - 1):  # Adding 3 more hidden layers
+            self.layers.add_module('hidden_linear', nn.Linear(32, 32))
+            self.layers.add_module('hidden_batchnorm', nn.BatchNorm1d(32))
+            self.layers.add_module('hidden_leakyrelu', nn.LeakyReLU())
+            
+        self.softmax = nn.Softmax()
+        self.output_layer = nn.Linear(32, output_size)
+
+    def forward(self, x):
+        x = x.to(torch.float32)
+        x = nn.functional.normalize(x)
+        x = self.layers(x)
 
         output = self.output_layer(x)
         output = self.softmax(output)
@@ -92,17 +161,21 @@ def init_params(net):
 
 
 def main():
-    input_size = 531
+    input_size = 87
     output_size = 5
     
     generator = torch.Generator().manual_seed(42)
-    training_data = CustomFeaturesDataset("./data/features_training.csv", "./data/groups_training.csv")
-    test_data = CustomFeaturesDataset("./data/features_testing.csv", "./data/groups_testing.csv")
-    validation_data, test_data = torch.utils.data.random_split(test_data, [0.5, 0.5], generator=generator)
+    training_data = CustomFeaturesDataset("./data/shape_features_training.csv", "./data/groups_training.csv")
+    test_data = CustomFeaturesDataset("./data/shape_features_testing.csv", "./data/groups_testing.csv")
+    """
+    val_data = CustomFeaturesDataset("./data/features_50_sub_val.csv", "./data/groups_sub_val.csv")
 
-    train_dataloader = DataLoader(training_data, batch_size=20, shuffle=True)
-    validation_dataloader = DataLoader(validation_data, batch_size=5, shuffle=True)
-    test_dataloader = DataLoader(test_data, batch_size=5, shuffle=True)
+    """
+
+    test_data, val_data = random_split(test_data, [0.5, 0.5], generator=generator)
+    train_dataloader = DataLoader(training_data, batch_size=25, shuffle=True)
+    validation_dataloader = DataLoader(val_data, batch_size=25, shuffle=True)
+    test_dataloader = DataLoader(test_data, batch_size=25, shuffle=True)
     
 
     if torch.cuda.is_available():
@@ -114,14 +187,18 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
 
-    nb_mlp = 25
-    nb_features = int(0.75 * input_size)
+    nb_mlp = 20
+    nb_features = int(0.5 * input_size)
+    plot_lines = 5
+    plot_col = 10
+    fig, axs = plt.subplots(plot_lines, plot_col)
 
     nb_epoch = 400
-    nb_rep = 5
+    nb_rep = 2
     epoch_patience = 40
     epoch_stability = 0
-    early_stop_thr = 1e-3
+    early_stop_thr = 2.5e-2
+    epoch_thr = 200
 
     MLPs = []
     subsets = []
@@ -129,7 +206,7 @@ def main():
     for i in range(nb_mlp):
         print(f"\n\n\nMLP {i}\n\n\n")
 
-        net = MLPClassifier(nb_features, output_size)
+        net = MLPClassifier2(nb_features, output_size)
         init_params(net)
         net = net.to(device)
 
@@ -150,12 +227,12 @@ def main():
 
         for epoch in range(nb_epoch):
             # potentially decrease lr 
-            print(epoch, "/", nb_epoch)
+            #print(epoch, "/", nb_epoch)
             lr *= 0.97
             optimizer.lr = lr
             losses = []
 
-            print(lr)
+            #print(lr)
 
             # Train : 1 epoch <-> loop once one the entire training dataset
             start = time.time()
@@ -192,7 +269,7 @@ def main():
             # meanlosses = torch.mean(torch.stack(losses)) 
             lossesTR.append(np.mean(losses))
             idxEpoch.append(idxEpoch[-1] + len(losses))
-            print('Epoch : %d Train Loss : %.3f         time: %.3f' % (epoch, np.mean(losses),end-start))
+            #print('Epoch : %d Train Loss : %.3f         time: %.3f' % (epoch, np.mean(losses),end-start))
             
             # Evaluate the current network on the validation dataset
             net.train()
@@ -213,29 +290,36 @@ def main():
                 correct += predicted.eq(targets.data).cpu().sum()
             end = time.time()
             lossesTE.append(np.mean(losses))
-            if len(lossesTE) > 1 and np.abs(lossesTE[-1] - lossesTE[-2]) < early_stop_thr:
+            if len(lossesTE) > 1 and epoch > epoch_thr and np.abs(lossesTE[-1] - lossesTE[-2])/lossesTE[-2] < early_stop_thr:
                 epoch_stability += 1
                 if epoch_stability >= epoch_patience:
                     print("EARLY STOPPING")
                     break
+            else:
+                epoch_stability = 0
 
             bestAcc = max(bestAcc,100.*correct.item()/total)
-            print('Epoch : %d Test Loss  : %.3f        Test Acc %.3f       time: %.3f' % (epoch, np.mean(losses),100.*correct/total,end-start))
-            print('--------------------------------------------------------------')
+            #print('Epoch : %d Test Loss  : %.3f        Test Acc %.3f       time: %.3f' % (epoch, np.mean(losses),100.*correct/total,end-start))
+            #print('--------------------------------------------------------------')
             net.train()
-
+        """
         print ('----------------------------------------------------------------------------')
         print ('----------------------------------------------------------------------------')
         print ('----------------------------------------------------------------------------')
         print ('best accuracy      : '+str(bestAcc))
         print ('best loss on train : '+str(np.min(lossesTR)) + ' idx '+str(np.argmin(lossesTR)))
         print ('best loss on test  : '+str(np.min(lossesTE)) + ' idx '+str(np.argmin(lossesTE)))
-
+        """
         MLPs.append(net)
+        
+        t = np.arange(0, len(lossesTRAll))
+
+        axs[i // plot_col, i % plot_col].plot(t, lossesTRAll, 'b', idxEpoch[1:], lossesTR, 'ro', idxEpoch[1:], lossesTE, 'gs')
 
     test_loss = 0.0
     correct, total = 0,0
-
+    y_true = []
+    y_pred = []
     for data,label in test_dataloader:
         if device == torch.device('cuda'):
             data, label = data.cuda(), label.cuda()
@@ -247,12 +331,19 @@ def main():
             res += output
 
         for o,l in zip(torch.argmax(res,axis = 1),label):
+            y_true.append(o)
+            y_pred.append(l)
             if o == l:
                 correct += 1
             total += 1
         loss = criterion(output,label)
         test_loss += loss.item() * data.size(0)
     print(correct, total, test_loss)
+    print(classification_report(y_true, y_pred, target_names=classes))
+    y_true = [int_to_class[y.data.item()] for y in y_true]
+    y_pred = [int_to_class[y.data.item()] for y in y_pred]
+    print(confusion_matrix(y_true, y_pred, labels=classes))
+    plt.show()
         
-if __name__ == "__main__":
+if __name__ == "__main__":    
     main()
